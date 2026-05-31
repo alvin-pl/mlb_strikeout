@@ -34,6 +34,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 BASE_URL = "https://statsapi.mlb.com/api/v1"
 DEFAULT_LEAGUE_K_RATE = 0.222
+# Below this expected-batters-faced level a pitcher is an opener/bulk arm whose
+# workload (and therefore strikeout total) is too volatile to model reliably.
+STARTER_BF_FLOOR = 16.0
 
 
 @dataclass(frozen=True)
@@ -193,7 +196,7 @@ def get_probable_pitchers(date: str) -> List[GameContext]:
                 contexts.append(
                     GameContext(
                         game_pk=int(game["gamePk"]),
-                        game_date=game.get("gameDate", date),
+                        game_date=game.get("officialDate") or day.get("date") or date,
                         pitcher_id=int(probable["id"]),
                         pitcher_name=probable["fullName"],
                         pitcher_team=(away_team if side == "away" else home_team).get("name", side),
@@ -369,9 +372,26 @@ def confidence_bonus(confidence: str) -> float:
     return -0.40
 
 
-def make_lean(line_edge: float, model_over: float, probability_edge: Optional[float], confidence: str) -> str:
+def make_lean(
+    line_edge: float,
+    model_over: float,
+    probability_edge: Optional[float],
+    confidence: str,
+    line: float,
+    expected_batters_faced: float,
+) -> str:
     if confidence == "low":
         return "PASS"
+    lean = _raw_lean(line_edge, model_over, probability_edge)
+    # Opener/bulk arms have floor-level, unpredictable workloads. An OVER on a
+    # real number (1.5+) is a coin flip there, so only trust near-lock lines
+    # (<= 1.0, where almost any appearance clears it). Backtested on logged slips.
+    if expected_batters_faced < STARTER_BF_FLOOR and line > 1.0 and lean.endswith("O"):
+        return "PASS"
+    return lean
+
+
+def _raw_lean(line_edge: float, model_over: float, probability_edge: Optional[float]) -> str:
     if probability_edge is not None:
         if probability_edge >= 0.07 and line_edge >= 1.00:
             return "STRONG O"
@@ -409,6 +429,8 @@ def build_risk_notes(projection: Projection, line: float, line_edge: float, pick
     )
     if projection.confidence == "low":
         notes.append("LOW_CONF")
+    if projection.expected_batters_faced < STARTER_BF_FLOOR:
+        notes.append("OPENER_BULK")
     if projection.expected_batters_faced < 19:
         notes.append("LOW_BF")
     if abs(line_edge) < 0.50:
@@ -439,6 +461,7 @@ def build_risk_notes(projection: Projection, line: float, line_edge: float, pick
 def make_slip_tier(lean: str, risk_notes: List[str]) -> str:
     hard_risks = {
         "LOW_CONF",
+        "OPENER_BULK",
         "LOW_BF",
         "HIGH_LINE_MORE",
         "LOW_PK_MORE",
@@ -480,7 +503,14 @@ def grade_prop(
     model_over = probability_over(line, projection.projected_ks)
     probability_edge = model_over - market_over if market_over is not None else None
     line_edge = projection.projected_ks - line
-    lean = make_lean(line_edge, model_over, probability_edge, projection.confidence)
+    lean = make_lean(
+        line_edge,
+        model_over,
+        probability_edge,
+        projection.confidence,
+        line,
+        projection.expected_batters_faced,
+    )
     recommended_pick = "MORE" if lean.endswith("O") else "LESS" if lean.endswith("U") else ""
     pick = pick or recommended_pick
     risks = build_risk_notes(projection, line, line_edge, pick)
@@ -493,6 +523,8 @@ def grade_prop(
 
     if projection.expected_batters_faced < 19:
         score -= 0.35
+    if "OPENER_BULK" in risks:
+        score -= 0.50
     if projection.opponent_k_rate > DEFAULT_LEAGUE_K_RATE:
         score += 0.15
     if "HIGH_LINE_MORE" in risks:
