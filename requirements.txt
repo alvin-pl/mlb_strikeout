@@ -1,0 +1,4 @@
+# Required for authenticated live trading and WebSocket market data.
+# Paper-mode unit tests use only Python's standard library.
+cryptography>=42.0.0
+websockets>=12.0

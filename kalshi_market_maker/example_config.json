@@ -1,0 +1,37 @@
+{
+  "paper_trading": true,
+  "live_trading_confirmed": false,
+  "demo": true,
+  "api_key_id_env": "KALSHI_API_KEY_ID",
+  "private_key_env": "KALSHI_PRIVATE_KEY",
+  "private_key_path_env": "KALSHI_PRIVATE_KEY_PATH",
+  "log_path": "logs/kalshi_bot.jsonl",
+  "fee_cents_per_contract": 1,
+  "markets": [
+    {
+      "ticker": "EXAMPLE-MARKET",
+      "fair_value_cents": 63,
+      "max_position": 10,
+      "before_major_news": false,
+      "seed_yes_bids": [["0.5900", "25.00"], ["0.5800", "40.00"]],
+      "seed_no_bids": [["0.3500", "30.00"], ["0.3400", "20.00"]]
+    }
+  ],
+  "strategy": {
+    "min_edge_cents": 2,
+    "quote_size": 2,
+    "quote_improvement_cents": 1,
+    "inventory_skew_cents": 2,
+    "allow_crossing": false,
+    "cancel_on_fair_value_change_cents": 1
+  },
+  "risk": {
+    "max_position_per_market": 20,
+    "max_total_daily_loss_cents": 2000,
+    "max_open_orders": 10,
+    "max_contracts_per_order": 5,
+    "min_spread_cents": 2,
+    "cancel_before_major_news": true,
+    "kill_switch_path": "KALSHI_KILL_SWITCH"
+  }
+}

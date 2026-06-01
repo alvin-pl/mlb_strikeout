@@ -93,3 +93,15 @@ The script estimates projected strikeouts from:
 When odds are provided, it converts American odds to no-vig market probability and compares that to the model's over probability.
 
 Treat the result as a screening tool, not an auto-bet. Check lineups, opener/bulk roles, pitch-count news, weather, umpire, and book movement before placing anything.
+
+## Kalshi Market Maker
+
+This repo also includes an educational, paper-first Kalshi market-making bot under `kalshi_market_maker/`.
+
+Quick paper-mode dry run:
+
+```bash
+python3 -m kalshi_market_maker.main --config kalshi_market_maker/example_config.json --once
+```
+
+Read `kalshi_market_maker/README.md` before enabling live trading. The bot does not claim profitability and requires both `--live` and explicit config confirmation before it can place real Kalshi orders.
