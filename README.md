@@ -64,7 +64,16 @@ The prop board includes:
 
 ## Backtest Your Slips
 
-After a game finishes, enter the final strikeout total in `actual_ks`:
+After the games finish, let the script pull the final strikeout totals for you:
+
+```bash
+python3 mlb_k_prop.py --date 2026-07-25 --season 2026 --props my_lines.csv --fill-actuals
+```
+
+That writes `actual_ks` for every finished start in the file and then grades the
+board. Rows whose game has not ended yet are left alone, so it is safe to rerun.
+
+You can also enter the total by hand:
 
 ```csv
 date,pitcher,team,opponent,line,pick,over_odds,under_odds,actual_ks,notes
@@ -77,9 +86,18 @@ Then rerun the same command:
 python3 mlb_k_prop.py --date 2026-05-27 --season 2026 --props my_lines.csv
 ```
 
-The script will print `HIT`, `MISS`, or `PUSH` and summarize the hit rate for rows with results.
+The script will print `HIT`, `MISS`, or `PUSH` and then a summary:
 
-The file `screenshot_results.csv` contains the picks from your screenshots so you can keep comparing future model changes against real slip outcomes.
+- Projection MAE against the closing line's MAE. If the line wins, the model's
+  gaps are not worth much on that sample.
+- Hit rate and units won per slip tier, using the odds in the CSV.
+
+The file `screenshot_results.csv` accumulates graded slates so you can keep
+comparing future model changes against real outcomes.
+
+Projections only use game logs from *before* the date being graded, so grading a
+finished slate never lets that day's own strikeout total leak into its own
+projection.
 
 ## How The Model Works
 
@@ -91,5 +109,15 @@ The script estimates projected strikeouts from:
 - Opponent team strikeout rate
 
 When odds are provided, it converts American odds to no-vig market probability and compares that to the model's over probability.
+
+Two knobs control how much the model is allowed to disagree with the book:
+
+- `--shrink` (default 0.5) prices the prop off a projection pulled halfway back
+  to the sportsbook line, because the line has been the better point estimate.
+  `--shrink 1.0` restores the old behavior of trusting the projection outright.
+- `--dispersion` (default 1.15) inflates the variance of the strikeout
+  distribution above Poisson to account for projection error, which pulls
+  `Over%` toward 50% and keeps thin edges out of the `CORE` tier.
+  `--dispersion 1.0` is plain Poisson.
 
 Treat the result as a screening tool, not an auto-bet. Check lineups, opener/bulk roles, pitch-count news, weather, umpire, and book movement before placing anything.

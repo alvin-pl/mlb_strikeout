@@ -35,6 +35,19 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 BASE_URL = "https://statsapi.mlb.com/api/v1"
 DEFAULT_LEAGUE_K_RATE = 0.222
 
+# Single-game strikeout counts scatter wider than a Poisson draw around a
+# projection, because the projection itself carries error. Measured variance /
+# mean on the graded 2026-07-25 slate was 1.16 for the model and 0.93 for the
+# closing line. Inflating the variance keeps Over%/Under% from reading as more
+# certain than the projection can support.
+DEFAULT_DISPERSION = 1.15
+
+# The projection is a weaker point estimate than the market: on the same slate
+# it missed by 2.00 Ks on average versus 1.80 for the line, and its
+# disagreements with the line did not predict the outcome. Probabilities are
+# therefore priced off a projection pulled part way back toward the line.
+DEFAULT_MARKET_SHRINK = 0.5
+
 
 @dataclass(frozen=True)
 class GameContext:
@@ -69,6 +82,8 @@ class PropGrade:
     projection: Projection
     line: float
     pick: str
+    over_odds: Optional[float]
+    under_odds: Optional[float]
     line_edge: float
     model_over: float
     market_over: Optional[float]
@@ -147,11 +162,38 @@ def poisson_cdf(k: int, lam: float) -> float:
     return min(max(total, 0.0), 1.0)
 
 
-def probability_over(line: float, projection: float) -> float:
+def count_cdf(k: int, mean: float, dispersion: float = 1.0) -> float:
+    """P(X <= k) for a count with the given mean and variance = dispersion * mean."""
+    if mean <= 0:
+        return 1.0
+    if dispersion <= 1.0 + 1e-9:
+        return poisson_cdf(k, mean)
+    # Negative binomial parameterized by its mean and variance ratio.
+    success = 1.0 / dispersion
+    size = mean / (dispersion - 1.0)
+    total = 0.0
+    for i in range(k + 1):
+        log_pmf = (
+            math.lgamma(i + size)
+            - math.lgamma(size)
+            - math.lgamma(i + 1)
+            + size * math.log(success)
+            + i * math.log1p(-success)
+        )
+        total += math.exp(log_pmf)
+    return min(max(total, 0.0), 1.0)
+
+
+def probability_over(line: float, projection: float, dispersion: float = 1.0) -> float:
     # For a 5.5 line, over is P(K >= 6). For a 5.0 line, push is ignored
     # and over is P(K >= 6), which is conservative for whole-number markets.
     needed = math.floor(line) + 1
-    return 1 - poisson_cdf(needed - 1, projection)
+    return 1 - count_cdf(needed - 1, projection, dispersion)
+
+
+def shrink_to_line(projection: float, line: float, shrink: float) -> float:
+    """Pull the projection toward the sportsbook line before pricing it."""
+    return line + shrink * (projection - line)
 
 
 def no_vig_probs(over_odds: Optional[float], under_odds: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
@@ -231,22 +273,6 @@ def get_pitcher_game_logs(player_id: int, season: int) -> List[Dict[str, Any]]:
     return rows
 
 
-def get_pitcher_season_stats(player_id: int, season: int) -> Dict[str, float]:
-    data = fetch_json(
-        f"/people/{player_id}/stats",
-        {"stats": "season", "group": "pitching", "season": season},
-    )
-    splits = extract_splits(data)
-    if not splits:
-        return {"strikeouts": 0.0, "batters_faced": 0.0, "outs": 0.0}
-    stat = splits[0].get("stat", {})
-    return {
-        "strikeouts": as_float(stat.get("strikeOuts")),
-        "batters_faced": as_float(stat.get("battersFaced")),
-        "outs": float(innings_to_outs(stat.get("inningsPitched"))),
-    }
-
-
 def get_team_hitting_k_rate(team_id: int, season: int) -> float:
     if not team_id:
         return DEFAULT_LEAGUE_K_RATE
@@ -273,14 +299,16 @@ def weighted_average(values: Iterable[float], fallback: float) -> float:
 
 
 def project_pitcher(context: GameContext, season: int, recent_games: int = 5) -> Projection:
-    season_stats = get_pitcher_season_stats(context.pitcher_id, season)
-    logs = get_pitcher_game_logs(context.pitcher_id, season)
+    game_date = context.game_date[:10]
+    # Only games strictly before the target date, so grading a finished slate
+    # cannot feed that day's own result back into the projection.
+    logs = [row for row in get_pitcher_game_logs(context.pitcher_id, season) if row["date"] < game_date]
     logs = sorted(logs, key=lambda row: row["date"], reverse=True)
     recent = logs[:recent_games]
 
-    season_bf = season_stats["batters_faced"]
-    season_ks = season_stats["strikeouts"]
-    season_outs = season_stats["outs"]
+    season_bf = sum(row["batters_faced"] for row in logs)
+    season_ks = sum(row["strikeouts"] for row in logs)
+    season_outs = float(sum(row["outs"] for row in logs))
 
     season_k_rate = season_ks / season_bf if season_bf > 0 else 0.21
     recent_k_rate = (
@@ -328,8 +356,14 @@ def project_pitcher(context: GameContext, season: int, recent_games: int = 5) ->
 
 
 def read_props(path: str) -> List[Dict[str, str]]:
+    return read_props_with_fields(path)[0]
+
+
+def read_props_with_fields(path: str) -> Tuple[List[Dict[str, str]], List[str]]:
     with open(path, newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        return rows, list(reader.fieldnames or [])
 
 
 def parse_optional_odds(value: Optional[str]) -> Optional[float]:
@@ -475,12 +509,18 @@ def grade_prop(
     under_odds: Optional[float],
     pick: str = "",
     actual_ks: Optional[float] = None,
+    dispersion: float = DEFAULT_DISPERSION,
+    shrink: float = DEFAULT_MARKET_SHRINK,
 ) -> PropGrade:
     market_over, _ = no_vig_probs(over_odds, under_odds)
-    model_over = probability_over(line, projection.projected_ks)
+    priced_ks = shrink_to_line(projection.projected_ks, line, shrink)
+    model_over = probability_over(line, priced_ks, dispersion)
     probability_edge = model_over - market_over if market_over is not None else None
     line_edge = projection.projected_ks - line
-    lean = make_lean(line_edge, model_over, probability_edge, projection.confidence)
+    # Without both prices there is no market probability to shrink against, so
+    # the unshrunk projection has to carry the decision on its own.
+    unpriced_over = probability_over(line, projection.projected_ks, dispersion)
+    lean = make_lean(line_edge, unpriced_over, probability_edge, projection.confidence)
     recommended_pick = "MORE" if lean.endswith("O") else "LESS" if lean.endswith("U") else ""
     pick = pick or recommended_pick
     risks = build_risk_notes(projection, line, line_edge, pick)
@@ -510,6 +550,8 @@ def grade_prop(
         projection=projection,
         line=line,
         pick=pick,
+        over_odds=over_odds,
+        under_odds=under_odds,
         line_edge=line_edge,
         model_over=model_over,
         market_over=market_over,
@@ -556,6 +598,60 @@ def export_prop_template(projections: List[Projection], output_path: str) -> Non
             )
 
 
+def match_context(contexts: List[GameContext], pitcher: str, team: str) -> Optional[GameContext]:
+    target = normalize_name(pitcher)
+    for context in contexts:
+        if normalize_name(context.pitcher_name) == target:
+            return context
+    parts = target.split()
+    if not parts:
+        return None
+    last_name = parts[-1]
+    team_key = normalize_name(team)
+    for context in contexts:
+        context_parts = normalize_name(context.pitcher_name).split()
+        if not context_parts or context_parts[-1] != last_name:
+            continue
+        if not team_key or normalize_name(context.pitcher_team) == team_key:
+            return context
+    return None
+
+
+def fill_actual_strikeouts(contexts: List[GameContext], season: int, props_path: str) -> int:
+    """Backfill actual_ks from finished games so slips can be graded automatically."""
+    rows, fieldnames = read_props_with_fields(props_path)
+    if "actual_ks" not in fieldnames:
+        print(f"{props_path} has no actual_ks column.", file=sys.stderr)
+        return 0
+
+    logs_cache: Dict[int, List[Dict[str, Any]]] = {}
+    filled = 0
+    for row in rows:
+        if (row.get("actual_ks") or "").strip():
+            continue
+        pitcher = (row.get("pitcher") or row.get("name") or "").strip()
+        context = match_context(contexts, pitcher, row.get("team") or "")
+        if context is None:
+            print(f"No scheduled start found for {pitcher}.", file=sys.stderr)
+            continue
+        game_date = (row.get("date") or "").strip() or context.game_date[:10]
+        if context.pitcher_id not in logs_cache:
+            logs_cache[context.pitcher_id] = get_pitcher_game_logs(context.pitcher_id, season)
+        appearances = [log for log in logs_cache[context.pitcher_id] if log["date"] == game_date]
+        if not appearances:
+            print(f"No final line yet for {pitcher} on {game_date}.", file=sys.stderr)
+            continue
+        row["actual_ks"] = f"{sum(log['strikeouts'] for log in appearances):.0f}"
+        filled += 1
+
+    if filled:
+        with open(props_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+    return filled
+
+
 def print_projection_table(projections: List[Projection]) -> None:
     header = (
         f"{'Pitcher':24} {'Team':22} {'Opp':22} {'ProjK':>6} {'BF':>5} "
@@ -572,7 +668,12 @@ def print_projection_table(projections: List[Projection]) -> None:
         )
 
 
-def print_prop_grades(projections: List[Projection], props_path: str) -> None:
+def print_prop_grades(
+    projections: List[Projection],
+    props_path: str,
+    dispersion: float = DEFAULT_DISPERSION,
+    shrink: float = DEFAULT_MARKET_SHRINK,
+) -> None:
     by_name = {normalize_name(projection.pitcher): projection for projection in projections}
     by_date_name = {(projection.date, normalize_name(projection.pitcher)): projection for projection in projections}
     by_last_team = {
@@ -603,12 +704,16 @@ def print_prop_grades(projections: List[Projection], props_path: str) -> None:
         pick = normalize_pick(prop.get("pick") or prop.get("direction"))
         line = as_float(prop.get("line"), default=0.0)
         actual_ks = parse_optional_odds(prop.get("actual_ks") or prop.get("actual"))
-        projection = by_date_name.get((row_date, normalize_name(pitcher))) if row_date else None
-        projection = projection or by_name.get(normalize_name(pitcher))
-        if projection is None and row_date and row_last_name and row_team:
-            projection = by_date_last_team.get((row_date, row_last_name, row_team))
-        if projection is None and row_last_name and row_team:
-            projection = by_last_team.get((row_last_name, row_team))
+        # A dated row must match a start on that date, otherwise a pitcher who
+        # also started another day in the range gets graded against that game.
+        if row_date:
+            projection = by_date_name.get((row_date, normalize_name(pitcher)))
+            if projection is None and row_last_name and row_team:
+                projection = by_date_last_team.get((row_date, row_last_name, row_team))
+        else:
+            projection = by_name.get(normalize_name(pitcher))
+            if projection is None and row_last_name and row_team:
+                projection = by_last_team.get((row_last_name, row_team))
         if projection is None:
             result = grade_result(pick, actual_ks, line) if prop.get("line") else ""
             print(
@@ -623,7 +728,9 @@ def print_prop_grades(projections: List[Projection], props_path: str) -> None:
 
         over_odds = parse_optional_odds(prop.get("over_odds"))
         under_odds = parse_optional_odds(prop.get("under_odds"))
-        grades.append(grade_prop(projection, line, over_odds, under_odds, pick, actual_ks))
+        grades.append(
+            grade_prop(projection, line, over_odds, under_odds, pick, actual_ks, dispersion, shrink)
+        )
 
     for grade in sorted(grades, key=lambda item: item.score, reverse=True):
         projection = grade.projection
@@ -634,11 +741,56 @@ def print_prop_grades(projections: List[Projection], props_path: str) -> None:
             f"{format_optional_number(grade.actual_ks):>4} {grade.result:>6} {grade.risk_notes[:20]:20}"
         )
 
-    finished = [grade for grade in grades if grade.result in ("HIT", "MISS")]
-    if finished:
-        hits = sum(1 for grade in finished if grade.result == "HIT")
-        print()
-        print(f"Backtest: {hits}/{len(finished)} hit ({hits / len(finished) * 100:.1f}%).")
+    print_backtest_summary(grades)
+
+
+def decimal_payout(odds: Optional[float]) -> Optional[float]:
+    if odds is None:
+        return None
+    return odds / 100 if odds > 0 else 100 / abs(odds)
+
+
+def units_won(grade: PropGrade) -> Optional[float]:
+    """Profit on a one unit bet, or None when the price is missing."""
+    if grade.result not in ("HIT", "MISS"):
+        return 0.0 if grade.result == "PUSH" else None
+    payout = decimal_payout(grade.over_odds if grade.pick == "MORE" else grade.under_odds)
+    if payout is None:
+        return None
+    return payout if grade.result == "HIT" else -1.0
+
+
+def print_backtest_summary(grades: List[PropGrade]) -> None:
+    settled = [grade for grade in grades if grade.actual_ks is not None]
+    if not settled:
+        return
+
+    print()
+    print(f"Settled rows: {len(settled)}")
+
+    model_error = statistics.mean(abs(g.projection.projected_ks - g.actual_ks) for g in settled)
+    line_error = statistics.mean(abs(g.line - g.actual_ks) for g in settled)
+    bias = statistics.mean(g.actual_ks - g.projection.projected_ks for g in settled)
+    print(f"Projection MAE {model_error:.2f} Ks vs closing line MAE {line_error:.2f} Ks (bias {bias:+.2f}).")
+    if line_error < model_error:
+        print("The line is the better point estimate on this sample, so treat gaps as weak evidence.")
+
+    graded = [grade for grade in settled if grade.result in ("HIT", "MISS", "PUSH")]
+    for label, subset in (
+        ("all picks", graded),
+        ("CORE", [g for g in graded if g.slip_tier == "CORE"]),
+        ("WATCH", [g for g in graded if g.slip_tier == "WATCH"]),
+    ):
+        decided = [g for g in subset if g.result in ("HIT", "MISS")]
+        if not decided:
+            continue
+        hits = sum(1 for g in decided if g.result == "HIT")
+        profits = [units_won(g) for g in subset]
+        priced = [value for value in profits if value is not None]
+        roi = ""
+        if priced:
+            roi = f", {sum(priced):+.2f}u on {len(priced)} bets ({sum(priced) / len(priced) * 100:+.1f}% ROI)"
+        print(f"  {label:10} {hits}/{len(decided)} hit ({hits / len(decided) * 100:.1f}%){roi}")
 
 
 def main() -> int:
@@ -649,7 +801,27 @@ def main() -> int:
     parser.add_argument("--props", help="CSV with manual lines. Required: pitcher,line. Optional: date,pick,over_odds,under_odds,actual_ks,notes")
     parser.add_argument("--export-template", help="Write a CSV of probable pitchers so you can manually fill in lines.")
     parser.add_argument("--recent-games", type=int, default=5, help="Recent starts/games to blend into projection.")
+    parser.add_argument(
+        "--fill-actuals",
+        action="store_true",
+        help="Backfill the actual_ks column of --props from finished games, then grade.",
+    )
+    parser.add_argument(
+        "--dispersion",
+        type=float,
+        default=DEFAULT_DISPERSION,
+        help="Variance / mean ratio for the strikeout distribution. 1.0 is plain Poisson.",
+    )
+    parser.add_argument(
+        "--shrink",
+        type=float,
+        default=DEFAULT_MARKET_SHRINK,
+        help="How much of the projection's gap to the line to trust when pricing. 1.0 ignores the line.",
+    )
     args = parser.parse_args()
+
+    if args.fill_actuals and not args.props:
+        parser.error("--fill-actuals requires --props")
 
     dates = [args.date]
     if args.props:
@@ -664,16 +836,22 @@ def main() -> int:
             dates = prop_dates
 
     projections: List[Projection] = []
+    all_contexts: List[GameContext] = []
     for date in dates:
         contexts = get_probable_pitchers(date)
         if not contexts:
             print(f"No probable pitchers found for {date}.", file=sys.stderr)
             continue
+        all_contexts.extend(contexts)
         for context in contexts:
             try:
                 projections.append(project_pitcher(context, args.season, args.recent_games))
             except RuntimeError as exc:
                 print(f"Skipping {context.pitcher_name}: {exc}", file=sys.stderr)
+
+    if args.fill_actuals and args.props:
+        filled = fill_actual_strikeouts(all_contexts, args.season, args.props)
+        print(f"Filled actual_ks for {filled} row(s) in {args.props}.")
 
     if not projections:
         print("No projections available.")
@@ -683,7 +861,7 @@ def main() -> int:
         export_prop_template(projections, args.export_template)
         print(f"Wrote prop template to {args.export_template}. Fill in the line column, then rerun with --props.")
     elif args.props:
-        print_prop_grades(projections, args.props)
+        print_prop_grades(projections, args.props, args.dispersion, args.shrink)
     else:
         print_projection_table(projections)
 
