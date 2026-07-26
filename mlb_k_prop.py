@@ -52,6 +52,9 @@ DEFAULT_MARKET_SHRINK = 0.5
 @dataclass(frozen=True)
 class GameContext:
     game_pk: int
+    # The schedule's local slate date. gameDate is a UTC timestamp, so a night
+    # game rolls into the next day and cannot be used as the game's date.
+    slate_date: str
     game_date: str
     pitcher_id: int
     pitcher_name: str
@@ -219,6 +222,7 @@ def get_probable_pitchers(date: str) -> List[GameContext]:
 
     contexts: List[GameContext] = []
     for day in data.get("dates", []):
+        slate_date = day.get("date", date)
         for game in day.get("games", []):
             teams = game.get("teams", {})
             away = teams.get("away", {})
@@ -235,6 +239,7 @@ def get_probable_pitchers(date: str) -> List[GameContext]:
                 contexts.append(
                     GameContext(
                         game_pk=int(game["gamePk"]),
+                        slate_date=slate_date,
                         game_date=game.get("gameDate", date),
                         pitcher_id=int(probable["id"]),
                         pitcher_name=probable["fullName"],
@@ -299,10 +304,13 @@ def weighted_average(values: Iterable[float], fallback: float) -> float:
 
 
 def project_pitcher(context: GameContext, season: int, recent_games: int = 5) -> Projection:
-    game_date = context.game_date[:10]
     # Only games strictly before the target date, so grading a finished slate
     # cannot feed that day's own result back into the projection.
-    logs = [row for row in get_pitcher_game_logs(context.pitcher_id, season) if row["date"] < game_date]
+    logs = [
+        row
+        for row in get_pitcher_game_logs(context.pitcher_id, season)
+        if row["date"] < context.slate_date
+    ]
     logs = sorted(logs, key=lambda row: row["date"], reverse=True)
     recent = logs[:recent_games]
 
@@ -340,7 +348,7 @@ def project_pitcher(context: GameContext, season: int, recent_games: int = 5) ->
     confidence = "high" if sample >= 8 and expected_bf >= 19 else "medium" if sample >= 4 else "low"
 
     return Projection(
-        date=context.game_date[:10],
+        date=context.slate_date,
         pitcher=context.pitcher_name,
         team=context.pitcher_team,
         opponent=context.opponent_team,
@@ -634,7 +642,7 @@ def fill_actual_strikeouts(contexts: List[GameContext], season: int, props_path:
         if context is None:
             print(f"No scheduled start found for {pitcher}.", file=sys.stderr)
             continue
-        game_date = (row.get("date") or "").strip() or context.game_date[:10]
+        game_date = (row.get("date") or "").strip() or context.slate_date
         if context.pitcher_id not in logs_cache:
             logs_cache[context.pitcher_id] = get_pitcher_game_logs(context.pitcher_id, season)
         appearances = [log for log in logs_cache[context.pitcher_id] if log["date"] == game_date]
@@ -724,6 +732,13 @@ def print_prop_grades(
             continue
 
         if not prop.get("line"):
+            # A row with no line cannot be graded, but printing it keeps the
+            # board's row count honest against the CSV.
+            print(
+                f"{projection.date[:10]:10} {projection.pitcher[:24]:24} {pick[:5]:>5} {'':>5} "
+                f"{projection.projected_ks:5.2f} {'':>6} {'':>7} {'':>6} {'NO LINE':>8} {'PASS':>5} "
+                f"{projection.confidence:>6} {format_optional_number(actual_ks):>4} {'':>6} {'NO_LINE':20}"
+            )
             continue
 
         over_odds = parse_optional_odds(prop.get("over_odds"))
@@ -751,9 +766,9 @@ def decimal_payout(odds: Optional[float]) -> Optional[float]:
 
 
 def units_won(grade: PropGrade) -> Optional[float]:
-    """Profit on a one unit bet, or None when the price is missing."""
+    """Profit on a one unit bet, or None when nothing was risked or priced."""
     if grade.result not in ("HIT", "MISS"):
-        return 0.0 if grade.result == "PUSH" else None
+        return None
     payout = decimal_payout(grade.over_odds if grade.pick == "MORE" else grade.under_odds)
     if payout is None:
         return None

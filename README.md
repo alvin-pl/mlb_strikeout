@@ -116,8 +116,8 @@ Two knobs control how much the model is allowed to disagree with the book:
   to the sportsbook line, because the line has been the better point estimate.
   `--shrink 1.0` restores the old behavior of trusting the projection outright.
 - `--dispersion` (default 1.15) inflates the variance of the strikeout
-  distribution above Poisson to account for projection error, which pulls
-  `Over%` toward 50% and keeps thin edges out of the `CORE` tier.
-  `--dispersion 1.0` is plain Poisson.
+  distribution above Poisson to account for projection error, which flattens the
+  tails and keeps thin edges out of the `CORE` tier. `--dispersion 1.0` is plain
+  Poisson.
 
 Treat the result as a screening tool, not an auto-bet. Check lineups, opener/bulk roles, pitch-count news, weather, umpire, and book movement before placing anything.
