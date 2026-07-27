@@ -339,7 +339,11 @@ def project_pitcher(context: GameContext, season: int, recent_games: int = 5) ->
     season_outs = float(sum(row["outs"] for row in logs))
 
     # Regress both rates toward the league average by the amount of work seen,
-    # so a one-start sample stays near league average instead of dominating.
+    # so a one-start sample stays near league average instead of dominating. The
+    # recent window is only ~130 batters faced, so it gets pulled much harder
+    # than the season rate does, which is the point: five starts of "form" is
+    # mostly noise. Regressing it toward the pitcher's own season rate instead
+    # of the league average scored worse on the graded set.
     season_k_rate = shrink_rate(season_ks, season_bf)
     recent_bf_total = sum(row["batters_faced"] for row in recent)
     recent_k_rate = (
@@ -839,8 +843,9 @@ def print_probability_calibration(settled: List[PropGrade]) -> None:
         )
 
     gaps = [g.line_edge for g in decided]
-    if len(set(gaps)) > 1:
-        margins = [g.actual_ks - g.line for g in decided]
+    margins = [g.actual_ks - g.line for g in decided]
+    # statistics.correlation rejects a constant input, either one of them.
+    if len(set(gaps)) > 1 and len(set(margins)) > 1:
         correlation = statistics.correlation(gaps, margins)
         reading = (
             "the gap pointed the right way on this sample"
