@@ -43,7 +43,7 @@ DEFAULT_LEAGUE_K_RATE = 0.222
 DEFAULT_DISPERSION = 1.15
 
 # The projection now edges the market as a point estimate over 64 graded props
-# (MAE 1.79 versus 1.87), but only barely, so probabilities are still priced off
+# (MAE 1.83 versus 1.87), but only barely, so probabilities are still priced off
 # a projection pulled halfway back toward the line. Halfway minimized log loss
 # on that set; trusting the projection fully was worse.
 DEFAULT_MARKET_SHRINK = 0.5
@@ -52,9 +52,14 @@ DEFAULT_MARKET_SHRINK = 0.5
 # single 8-strikeout start is not a 42% strikeout pitcher, and extrapolating
 # from thin samples was the largest single source of projection error: 3.53 Ks
 # of MAE on low-confidence starts versus 1.95 on high-confidence ones.
-PRIOR_BATTERS_FACED = 220.0
+#
+# 100 batters faced is roughly where strikeout rate stabilizes. Regressing
+# harder scored better on the 64 graded props all the way out to a full season
+# of prior, but 64 rows is not enough to justify overriding that, and the gain
+# past here was 0.05 Ks of MAE.
+PRIOR_BATTERS_FACED = 100.0
 LEAGUE_BF_PER_START = 22.5
-PRIOR_STARTS = 3.0
+PRIOR_STARTS = 2.0
 
 
 @dataclass(frozen=True)

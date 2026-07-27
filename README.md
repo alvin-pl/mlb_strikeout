@@ -114,12 +114,13 @@ The script estimates projected strikeouts from:
 - Opponent team strikeout rate
 
 Both strikeout rates are regressed toward the league average by the number of
-batters the pitcher has actually faced, and expected batters faced is regressed
-toward a league-average start. Without that, a pitcher with one 8-strikeout
-start projects as a 42% strikeout pitcher: low-confidence starts missed by 3.53
-Ks on average before the change and 2.05 after, and the projection went from
-losing to the closing line (MAE 2.02 vs 1.87 over 64 graded props) to edging it
-(1.79 vs 1.87).
+batters the pitcher has actually faced (prior weight 100 batters, roughly where
+strikeout rate stabilizes), and expected batters faced is regressed toward a
+league-average start. Without that, a pitcher with one 8-strikeout start projects
+as a 42% strikeout pitcher: low-confidence starts missed by 3.53 Ks on average
+before the change, and the projection went from losing to the closing line (MAE
+2.03 vs 1.87 over 64 graded props) to edging it (1.83 vs 1.87), with
+`corr(gap, actual - line)` going from -0.01 to +0.17.
 
 When odds are provided, it converts American odds to no-vig market probability and compares that to the model's over probability.
 
