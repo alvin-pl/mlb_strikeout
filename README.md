@@ -54,12 +54,11 @@ The prop board includes:
 
 - `Gap` - projection minus sportsbook line
 - `Over%` - model probability that the pitcher goes over
-- `MktO%` - no-vig market over probability when both odds are entered
-- `ProbEd` - model over probability minus market over probability
 - `Score` - ranking score for sorting slip candidates
 - `Decision` - `STRONG O`, `LEAN O`, `PASS`, `LEAN U`, or `STRONG U`
 - `Slip` - `CORE`, `WATCH`, or `PASS`
-- `Risk` - guardrails such as `HIGH_LINE_MORE`, `LOW_RECENT_CLEAR`, `RECENT_THIN`, `LOW_PK_MORE`, `LOW_BF`, or `THIN_GAP`
+- `Conf` - `high`, `medium`, or `low`, from how many prior starts back the projection
+- `Risk` - guardrails such as `HIGH_LINE_MORE`, `LOW_RECENT_CLEAR`, `RECENT_THIN`, `LOW_PK_MORE`, `LOW_BF`, `LOW_CONF`, or `THIN_GAP`
 - `Result` - optional hit/miss backtest if you fill in `actual_ks`
 
 ## Backtest Your Slips
@@ -90,6 +89,12 @@ The script will print `HIT`, `MISS`, or `PUSH` and then a summary:
 
 - Projection MAE against the closing line's MAE. If the line wins, the model's
   gaps are not worth much on that sample.
+- Log loss of the model's `Over%` against a coin flip and, on rows with both
+  prices, against the no-vig market probability. A few dozen bets of ROI is
+  mostly noise, so this proper scoring rule is the more honest read on whether a
+  model change helped.
+- `corr(projection gap, actual - line)`, i.e. whether disagreeing with the book
+  has actually predicted the outcome.
 - Hit rate and units won per slip tier, using the odds in the CSV.
 
 The file `screenshot_results.csv` accumulates graded slates so you can keep
@@ -108,13 +113,22 @@ The script estimates projected strikeouts from:
 - Expected batters faced from recent workload and season workload
 - Opponent team strikeout rate
 
+Both strikeout rates are regressed toward the league average by the number of
+batters the pitcher has actually faced, and expected batters faced is regressed
+toward a league-average start. Without that, a pitcher with one 8-strikeout
+start projects as a 42% strikeout pitcher: low-confidence starts missed by 3.53
+Ks on average before the change and 2.05 after, and the projection went from
+losing to the closing line (MAE 2.02 vs 1.87 over 64 graded props) to edging it
+(1.79 vs 1.87).
+
 When odds are provided, it converts American odds to no-vig market probability and compares that to the model's over probability.
 
 Two knobs control how much the model is allowed to disagree with the book:
 
 - `--shrink` (default 0.5) prices the prop off a projection pulled halfway back
-  to the sportsbook line, because the line has been the better point estimate.
-  `--shrink 1.0` restores the old behavior of trusting the projection outright.
+  to the sportsbook line. Halfway minimized log loss on the graded set; trusting
+  the projection outright (`--shrink 1.0`) was worse even after the projection
+  started beating the line on MAE.
 - `--dispersion` (default 1.15) inflates the variance of the strikeout
   distribution above Poisson to account for projection error, which flattens the
   tails and keeps thin edges out of the `CORE` tier. `--dispersion 1.0` is plain

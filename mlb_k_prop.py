@@ -42,11 +42,19 @@ DEFAULT_LEAGUE_K_RATE = 0.222
 # certain than the projection can support.
 DEFAULT_DISPERSION = 1.15
 
-# The projection is a weaker point estimate than the market: on the same slate
-# it missed by 2.00 Ks on average versus 1.80 for the line, and its
-# disagreements with the line did not predict the outcome. Probabilities are
-# therefore priced off a projection pulled part way back toward the line.
+# The projection now edges the market as a point estimate over 64 graded props
+# (MAE 1.79 versus 1.87), but only barely, so probabilities are still priced off
+# a projection pulled halfway back toward the line. Halfway minimized log loss
+# on that set; trusting the projection fully was worse.
 DEFAULT_MARKET_SHRINK = 0.5
+
+# Empirical-Bayes priors for pitchers with little logged work. A pitcher with a
+# single 8-strikeout start is not a 42% strikeout pitcher, and extrapolating
+# from thin samples was the largest single source of projection error: 3.53 Ks
+# of MAE on low-confidence starts versus 1.95 on high-confidence ones.
+PRIOR_BATTERS_FACED = 220.0
+LEAGUE_BF_PER_START = 22.5
+PRIOR_STARTS = 3.0
 
 
 @dataclass(frozen=True)
@@ -296,6 +304,13 @@ def get_team_hitting_k_rate(team_id: int, season: int) -> float:
     return strikeouts / plate_appearances
 
 
+def shrink_rate(strikeouts: float, batters_faced: float) -> float:
+    """Strikeout rate regressed toward the league average by sample size."""
+    return (strikeouts + DEFAULT_LEAGUE_K_RATE * PRIOR_BATTERS_FACED) / (
+        batters_faced + PRIOR_BATTERS_FACED
+    )
+
+
 def weighted_average(values: Iterable[float], fallback: float) -> float:
     clean = [v for v in values if v > 0]
     if not clean:
@@ -318,10 +333,13 @@ def project_pitcher(context: GameContext, season: int, recent_games: int = 5) ->
     season_ks = sum(row["strikeouts"] for row in logs)
     season_outs = float(sum(row["outs"] for row in logs))
 
-    season_k_rate = season_ks / season_bf if season_bf > 0 else 0.21
+    # Regress both rates toward the league average by the amount of work seen,
+    # so a one-start sample stays near league average instead of dominating.
+    season_k_rate = shrink_rate(season_ks, season_bf)
+    recent_bf_total = sum(row["batters_faced"] for row in recent)
     recent_k_rate = (
-        sum(row["strikeouts"] for row in recent) / sum(row["batters_faced"] for row in recent)
-        if recent and sum(row["batters_faced"] for row in recent) > 0
+        shrink_rate(sum(row["strikeouts"] for row in recent), recent_bf_total)
+        if recent_bf_total > 0
         else season_k_rate
     )
 
@@ -333,8 +351,15 @@ def project_pitcher(context: GameContext, season: int, recent_games: int = 5) ->
     avg_recent_bf = weighted_average(recent_bf, fallback=0.0)
     avg_recent_outs = weighted_average(recent_outs, fallback=0.0)
     estimated_recent_bf = avg_recent_bf or (avg_recent_outs * season_bf_per_out)
-    estimated_season_bf = season_bf / len(logs) if logs and season_bf > 0 else 22.5
+    estimated_season_bf = (
+        season_bf / len(logs) if logs and season_bf > 0 else LEAGUE_BF_PER_START
+    )
     expected_bf = 0.6 * estimated_recent_bf + 0.4 * estimated_season_bf
+    # Same idea for workload: a handful of starts says little about how deep a
+    # pitcher will be allowed to go.
+    expected_bf = (expected_bf * len(logs) + LEAGUE_BF_PER_START * PRIOR_STARTS) / (
+        len(logs) + PRIOR_STARTS
+    )
     expected_bf = min(max(expected_bf, 12.0), 32.0)
 
     opponent_k_rate = get_team_hitting_k_rate(context.opponent_team_id, season)
@@ -775,6 +800,51 @@ def units_won(grade: PropGrade) -> Optional[float]:
     return payout if grade.result == "HIT" else -1.0
 
 
+def log_loss(probabilities: List[Tuple[float, bool]]) -> float:
+    clipped = [(min(max(p, 1e-6), 1 - 1e-6), hit) for p, hit in probabilities]
+    return -statistics.mean(
+        math.log(p) if hit else math.log(1 - p) for p, hit in clipped
+    )
+
+
+def print_probability_calibration(settled: List[PropGrade]) -> None:
+    """Score the model's Over% against the market's, and against a coin flip.
+
+    ROI over a few dozen bets is mostly noise, so the summary also reports a
+    proper scoring rule: whether the probabilities themselves beat the prices.
+    """
+    decided = [g for g in settled if g.actual_ks != g.line]
+    if len(decided) < 10:
+        return
+
+    outcomes = [(g.model_over, g.actual_ks > g.line) for g in decided]
+    print(
+        f"Over% log loss {log_loss(outcomes):.4f} vs {log_loss([(0.5, hit) for _, hit in outcomes]):.4f} "
+        f"for a coin flip, on {len(decided)} decided rows."
+    )
+
+    priced = [g for g in decided if g.market_over is not None]
+    if len(priced) >= 10:
+        model = log_loss([(g.model_over, g.actual_ks > g.line) for g in priced])
+        market = log_loss([(g.market_over, g.actual_ks > g.line) for g in priced])
+        verdict = "beats" if model < market else "loses to"
+        print(
+            f"On {len(priced)} priced rows the model {verdict} the no-vig market: "
+            f"{model:.4f} vs {market:.4f}."
+        )
+
+    gaps = [g.line_edge for g in decided]
+    if len(set(gaps)) > 1:
+        margins = [g.actual_ks - g.line for g in decided]
+        correlation = statistics.correlation(gaps, margins)
+        reading = (
+            "the gap pointed the right way on this sample"
+            if correlation >= 0.15
+            else "the gap is not yet a signal"
+        )
+        print(f"corr(projection gap, actual - line) = {correlation:+.3f}; {reading}.")
+
+
 def print_backtest_summary(grades: List[PropGrade]) -> None:
     settled = [grade for grade in grades if grade.actual_ks is not None]
     if not settled:
@@ -789,6 +859,8 @@ def print_backtest_summary(grades: List[PropGrade]) -> None:
     print(f"Projection MAE {model_error:.2f} Ks vs closing line MAE {line_error:.2f} Ks (bias {bias:+.2f}).")
     if line_error < model_error:
         print("The line is the better point estimate on this sample, so treat gaps as weak evidence.")
+
+    print_probability_calibration(settled)
 
     graded = [grade for grade in settled if grade.result in ("HIT", "MISS", "PUSH")]
     for label, subset in (
