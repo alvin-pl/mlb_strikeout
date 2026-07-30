@@ -8,3 +8,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+history/*.jsonl
+history/team_k_rates.json
+history/*.log

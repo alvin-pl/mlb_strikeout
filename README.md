@@ -122,6 +122,15 @@ before the change, and the projection went from losing to the closing line (MAE
 2.03 vs 1.87 over 64 graded props) to edging it (1.83 vs 1.87), with
 `corr(gap, actual - line)` going from -0.01 to +0.17.
 
+The constants were then validated on a bulk historical backtest of ~26,000
+starter outings (2021-2026) pulled from the MLB Stats API with the scripts in
+`history/`: sweeping the rate prior, the season/recent blend, the recent
+window, the workload blend and prior, the opponent cap, and the dispersion
+around their current values changed MAE by less than 0.005 Ks and held-out 2026
+MAE by less than 0.002 Ks, so they are left where they are. Run
+`python3 history/download_history.py` (one-time, ~5 minutes) and then
+`python3 history/backtest.py` to reproduce.
+
 When odds are provided, it converts American odds to no-vig market probability and compares that to the model's over probability.
 
 Two knobs control how much the model is allowed to disagree with the book:
