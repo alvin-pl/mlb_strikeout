@@ -440,6 +440,15 @@ def print_prediction_table(predictions: List[GamePrediction]) -> None:
         )
 
 
+def print_compact_picks(predictions: List[GamePrediction]) -> None:
+    for row in sorted(predictions, key=lambda item: abs(item.home_win_prob - 0.5), reverse=True):
+        winner_prob = max(row.home_win_prob, row.away_win_prob)
+        print(
+            f"{row.predicted_winner} {winner_prob * 100:.0f}% "
+            f"({row.away_team} @ {row.home_team}, {row.confidence})"
+        )
+
+
 def print_moneyline_grades(predictions: List[GamePrediction], moneylines_path: str) -> None:
     by_date_matchup = {
         (prediction.date, normalize_team(prediction.home_team), normalize_team(prediction.away_team)): prediction
@@ -504,6 +513,7 @@ def main() -> int:
         help="CSV with moneyline odds. Required: home_team,away_team. Optional: date,home_ml,away_ml,actual_winner,notes",
     )
     parser.add_argument("--export-template", help="Write a CSV of the day's games so you can manually fill in moneylines.")
+    parser.add_argument("--compact", action="store_true", help="Print one short line per game, suited for phone notifications.")
     args = parser.parse_args()
 
     dates = [args.date]
@@ -548,6 +558,8 @@ def main() -> int:
         print(f"Wrote moneyline template to {args.export_template}. Fill in the odds columns, then rerun with --moneylines.")
     elif args.moneylines:
         print_moneyline_grades(predictions, args.moneylines)
+    elif args.compact:
+        print_compact_picks(predictions)
     else:
         print_prediction_table(predictions)
 
