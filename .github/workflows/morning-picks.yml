@@ -1,0 +1,36 @@
+name: Morning MLB Picks
+
+on:
+  schedule:
+    # 12:00 UTC = 8:00 AM ET (7:00 AM during standard time)
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  picks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run predictions
+        run: |
+          python mlb_win_prediction.py --compact | tee picks.txt
+
+      - name: Send picks to ntfy
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          if [ -z "$NTFY_TOPIC" ]; then
+            echo "NTFY_TOPIC secret not set; skipping notification." >&2
+            exit 1
+          fi
+          curl -sf \
+            -H "Title: MLB Picks $(date +%Y-%m-%d)" \
+            -H "Priority: default" \
+            -H "Tags: baseball" \
+            --data-binary @picks.txt \
+            "https://ntfy.sh/$NTFY_TOPIC"

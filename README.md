@@ -164,6 +164,19 @@ date,home_team,away_team,home_ml,away_ml,actual_winner,notes
 
 Then rerun the same command. The script will print `HIT` or `MISS` and summarize the hit rate for rows with results.
 
+## Daily Picks Pushed To Your Phone (GitHub Actions + ntfy)
+
+The workflow in `.github/workflows/morning-picks.yml` runs the win prediction script every morning at 12:00 UTC (8 AM ET) and pushes the picks to your phone via [ntfy.sh](https://ntfy.sh). It's free — no server, no account.
+
+Setup:
+
+1. Pick a secret, unguessable topic name, e.g. `alvin-mlb-picks-x7k2q9`. Anyone who knows the topic name can read the messages, so keep it random.
+2. In this GitHub repo, go to Settings → Secrets and variables → Actions → New repository secret. Name it `NTFY_TOPIC` and set the value to your topic name.
+3. On your phone, either install the free ntfy app and subscribe to your topic, or open `https://ntfy.sh/your-topic-name` in your browser and allow notifications.
+4. Test it: go to the repo's Actions tab → "Morning MLB Picks" → "Run workflow". You should get a notification within a minute or two.
+
+To change the delivery time, edit the `cron` line in the workflow (times are in UTC).
+
 ## How The Win/Loss Model Works
 
 The script estimates each team's strength from:
