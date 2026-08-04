@@ -1,0 +1,61 @@
+name: Live Game Monitor
+
+on:
+  schedule:
+    # Every hour from 17:00 UTC (1 PM ET) through 04:00 UTC (midnight ET),
+    # covering afternoon and night games.
+    - cron: "5 17-23 * * *"
+    - cron: "5 0-4 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: live-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compute game date
+        id: gamedate
+        run: |
+          # Before 09:00 UTC we are still covering the previous ET night slate.
+          if [ "$(date -u +%H)" -lt 9 ]; then
+            echo "date=$(date -u -d 'yesterday' +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          else
+            echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore alert state
+        uses: actions/cache/restore@v4
+        with:
+          path: live_monitor_state.json
+          key: live-monitor-state-${{ steps.gamedate.outputs.date }}-${{ github.run_id }}
+          restore-keys: |
+            live-monitor-state-${{ steps.gamedate.outputs.date }}-
+
+      - name: Monitor live games
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          PROPS_ARG=""
+          if [ -f my_lines.csv ]; then
+            PROPS_ARG="--props my_lines.csv"
+          fi
+          python mlb_live_monitor.py \
+            --date "${{ steps.gamedate.outputs.date }}" \
+            --duration 55 --interval 120 $PROPS_ARG
+
+      - name: Save alert state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: live_monitor_state.json
+          key: live-monitor-state-${{ steps.gamedate.outputs.date }}-${{ github.run_id }}
