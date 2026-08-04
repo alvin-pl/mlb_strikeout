@@ -177,6 +177,24 @@ Setup:
 
 To change the delivery time, edit the `cron` line in the workflow (times are in UTC).
 
+## Live Game Monitoring For In-Game Betting (GitHub Actions + ntfy)
+
+`mlb_live_monitor.py` polls live games and pushes alerts to your phone via ntfy so you can bet live:
+
+- **Win probability divergence** - when the live win probability of the team the pregame model picked crosses key bands (25/35/50/65/75%), you get an alert comparing live vs. pregame probability. A big drop can mean a hedge spot or a better live price on your side.
+- **Live pitcher strikeouts vs. prop lines** - pass your props CSV (same format as `mlb_k_prop.py`) with `--props my_lines.csv` and get alerts when a pitcher is 1 K away from the line, clears it, or leaves the game under it.
+- **Score updates** - lead changes and scoring updates for games the model picked, plus a final HIT/MISS alert.
+
+Run it locally during games:
+
+```bash
+python3 mlb_live_monitor.py --ntfy-topic your-topic --props my_lines.csv
+```
+
+It polls every 2 minutes (`--interval` to change) until all games finish, and deduplicates alerts through `live_monitor_state.json` so restarts don't re-send old alerts. Use `--once` for a single poll from an external scheduler.
+
+The workflow in `.github/workflows/live-monitor.yml` runs it automatically on GitHub Actions every hour from 1 PM ET to midnight ET, each run monitoring for 55 minutes. It reuses the same `NTFY_TOPIC` secret as the morning picks workflow and persists alert state between runs with the Actions cache, so you won't get duplicate alerts. If `my_lines.csv` exists in the repo with today's lines filled in, strikeout prop tracking is included automatically.
+
 ## How The Win/Loss Model Works
 
 The script estimates each team's strength from:
