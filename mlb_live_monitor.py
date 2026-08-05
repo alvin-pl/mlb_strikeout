@@ -11,8 +11,10 @@ phone via ntfy.sh:
 2. Live pitcher strikeouts vs. prop lines - reads your props CSV (same format
    as mlb_k_prop.py) and alerts when a pitcher is one strikeout away from the
    line, clears it, or exits the game under it.
-3. General score/inning updates for games you picked - alerts on lead changes
-   and scoring plays.
+3. Two day-level check-ins - one alert when the first game of the day
+   reaches the 5th inning, and one when the first team of the day is up
+   5+ runs in the 5th or later, plus final HIT/MISS alerts for picked
+   games.
 
 Usage:
 
@@ -52,7 +54,7 @@ LIVE_STATUS_CODES = {"I", "IR", "IH", "MA", "MC", "ME", "MF", "MG", "MI"}
 FINAL_STATUS_CODES = {"F", "FR", "FT", "O"}
 WIN_PROB_BANDS = [0.25, 0.35, 0.50, 0.65, 0.75]
 BIG_LEAD_RUNS = 5
-BIG_LEAD_INNING = 6
+BIG_LEAD_INNING = 5
 
 
 def load_state(path: str) -> Dict[str, Any]:
@@ -186,6 +188,7 @@ def check_game(
     prop_lines: Dict[str, Dict[str, Any]],
     state: Dict[str, Any],
     topic: Optional[str],
+    date: str = "",
 ) -> None:
     game_pk = int(game.get("gamePk", 0) or 0)
     status_code = game.get("status", {}).get("statusCode", "")
@@ -211,36 +214,26 @@ def check_game(
 
     game_state = state.setdefault("games", {}).setdefault(str(game_pk), {})
 
-    # --- Score / lead-change updates for picked games ---
+    # --- Two day-level check-ins, keyed by date so only the first game of
+    # the day that qualifies triggers each one ---
     picked_team = prediction.predicted_winner if prediction else None
-    if picked_team and status_code in LIVE_STATUS_CODES:
-        prev_score = game_state.get("score")
-        if prev_score != [away_runs, home_runs]:
-            if prev_score is not None:
-                alert_once(
-                    state,
-                    f"{game_pk}:score:{away_runs}-{home_runs}",
-                    topic,
-                    f"Score update: {matchup}",
-                    f"{score_line}\nYour pick: {picked_team}",
-                )
-            game_state["score"] = [away_runs, home_runs]
-
-    # --- Big lead: team up 5+ runs in the 5th inning or later ---
     if status_code in LIVE_STATUS_CODES and isinstance(inning, int) and inning >= BIG_LEAD_INNING:
         margin = home_runs - away_runs
+        alert_once(
+            state,
+            f"{date}:first_5th",
+            topic,
+            "First game in the 5th inning",
+            f"{matchup}\n{score_line}",
+        )
         if abs(margin) >= BIG_LEAD_RUNS:
             leader = home_name if margin > 0 else away_name
-            note = ""
-            if picked_team:
-                on_pick = normalize_team(leader) == normalize_team(picked_team)
-                note = f"\nYour pick: {picked_team} ({'winning' if on_pick else 'losing'})"
             alert_once(
                 state,
-                f"{game_pk}:big_lead:{leader}",
+                f"{date}:first_big_lead",
                 topic,
                 f"Expected win: {leader}",
-                f"{leader} up {abs(margin)} in the {half.lower()} of the {inning}th.\n{score_line}{note}",
+                f"{leader} up {abs(margin)} in inning {inning}.\n{score_line}",
                 priority="high",
             )
 
@@ -326,7 +319,7 @@ def poll(date: str, season: int, predictions: Dict[int, GamePrediction], prop_li
         status_code = game.get("status", {}).get("statusCode", "")
         if status_code not in FINAL_STATUS_CODES:
             anything_left = True
-        check_game(game, predictions.get(int(game.get("gamePk", 0) or 0)), prop_lines, state, topic)
+        check_game(game, predictions.get(int(game.get("gamePk", 0) or 0)), prop_lines, state, topic, date)
     return anything_left
 
 
