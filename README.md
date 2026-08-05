@@ -183,8 +183,8 @@ To change the delivery time, edit the `cron` line in the workflow (times are in 
 
 - **Win probability divergence** - when the live win probability of the team the pregame model picked crosses key bands (25/35/50/65/75%), you get an alert comparing live vs. pregame probability. A big drop can mean a hedge spot or a better live price on your side.
 - **Live pitcher strikeouts vs. prop lines** - pass your props CSV (same format as `mlb_k_prop.py`) with `--props my_lines.csv` and get alerts when a pitcher is 1 K away from the line, clears it, or leaves the game under it.
-- **One check-in per game** - a single notification when the game reaches the 5th inning with the current score, or a high-priority "expected win" alert instead if a team is already up 5+ runs (teams with that lead that late almost always win). Either way it notes how your pick is doing, then goes quiet so you can just glance at your phone for the score.
-- **Final HIT/MISS** - one alert with the final score and whether the model's pick hit.
+- **Two day-level check-ins** - one notification when the first game of the day reaches the 5th inning (with the score), and one high-priority "expected win" notification when the first team of the day goes up 5+ runs in the 5th inning or later. After those, check your phone's scoreboard — no per-game score spam.
+- **Final HIT/MISS** - one alert per picked game with the final score and whether the model's pick hit.
 
 Run it locally during games:
 
