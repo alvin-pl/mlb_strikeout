@@ -11,8 +11,9 @@ phone via ntfy.sh:
 2. Live pitcher strikeouts vs. prop lines - reads your props CSV (same format
    as mlb_k_prop.py) and alerts when a pitcher is one strikeout away from the
    line, clears it, or exits the game under it.
-3. General score/inning updates for games you picked - alerts on lead changes
-   and scoring plays.
+3. One check-in per game - a single alert when the game reaches the 5th
+   inning (or an "expected win" alert if a team is already up 5+ runs),
+   plus a final HIT/MISS alert for picked games.
 
 Usage:
 
@@ -52,7 +53,7 @@ LIVE_STATUS_CODES = {"I", "IR", "IH", "MA", "MC", "ME", "MF", "MG", "MI"}
 FINAL_STATUS_CODES = {"F", "FR", "FT", "O"}
 WIN_PROB_BANDS = [0.25, 0.35, 0.50, 0.65, 0.75]
 BIG_LEAD_RUNS = 5
-BIG_LEAD_INNING = 6
+BIG_LEAD_INNING = 5
 
 
 def load_state(path: str) -> Dict[str, Any]:
@@ -211,37 +212,33 @@ def check_game(
 
     game_state = state.setdefault("games", {}).setdefault(str(game_pk), {})
 
-    # --- Score / lead-change updates for picked games ---
+    # --- One check-in per game: entering the 5th inning, or a 5+ run lead ---
     picked_team = prediction.predicted_winner if prediction else None
-    if picked_team and status_code in LIVE_STATUS_CODES:
-        prev_score = game_state.get("score")
-        if prev_score != [away_runs, home_runs]:
-            if prev_score is not None:
-                alert_once(
-                    state,
-                    f"{game_pk}:score:{away_runs}-{home_runs}",
-                    topic,
-                    f"Score update: {matchup}",
-                    f"{score_line}\nYour pick: {picked_team}",
-                )
-            game_state["score"] = [away_runs, home_runs]
-
-    # --- Big lead: team up 5+ runs in the 5th inning or later ---
     if status_code in LIVE_STATUS_CODES and isinstance(inning, int) and inning >= BIG_LEAD_INNING:
         margin = home_runs - away_runs
+        note = ""
+        if picked_team:
+            leading = home_name if margin > 0 else away_name if margin < 0 else ""
+            on_pick = normalize_team(leading) == normalize_team(picked_team)
+            status = "winning" if on_pick else "tied" if not leading else "losing"
+            note = f"\nYour pick: {picked_team} ({status})"
         if abs(margin) >= BIG_LEAD_RUNS:
             leader = home_name if margin > 0 else away_name
-            note = ""
-            if picked_team:
-                on_pick = normalize_team(leader) == normalize_team(picked_team)
-                note = f"\nYour pick: {picked_team} ({'winning' if on_pick else 'losing'})"
             alert_once(
                 state,
-                f"{game_pk}:big_lead:{leader}",
+                f"{game_pk}:checkin",
                 topic,
                 f"Expected win: {leader}",
-                f"{leader} up {abs(margin)} in the {half.lower()} of the {inning}th.\n{score_line}{note}",
+                f"{leader} up {abs(margin)} in inning {inning}.\n{score_line}{note}",
                 priority="high",
+            )
+        else:
+            alert_once(
+                state,
+                f"{game_pk}:checkin",
+                topic,
+                f"5th inning: {matchup}",
+                f"{score_line}{note}",
             )
 
     # --- Win probability divergence for picked games ---
