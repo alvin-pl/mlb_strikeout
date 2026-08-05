@@ -51,6 +51,8 @@ from mlb_win_prediction import (
 LIVE_STATUS_CODES = {"I", "IR", "IH", "MA", "MC", "ME", "MF", "MG", "MI"}
 FINAL_STATUS_CODES = {"F", "FR", "FT", "O"}
 WIN_PROB_BANDS = [0.25, 0.35, 0.50, 0.65, 0.75]
+BIG_LEAD_RUNS = 5
+BIG_LEAD_INNING = 5
 
 
 def load_state(path: str) -> Dict[str, Any]:
@@ -223,6 +225,24 @@ def check_game(
                     f"{score_line}\nYour pick: {picked_team}",
                 )
             game_state["score"] = [away_runs, home_runs]
+
+    # --- Big lead: team up 5+ runs in the 5th inning or later ---
+    if status_code in LIVE_STATUS_CODES and isinstance(inning, int) and inning >= BIG_LEAD_INNING:
+        margin = home_runs - away_runs
+        if abs(margin) >= BIG_LEAD_RUNS:
+            leader = home_name if margin > 0 else away_name
+            note = ""
+            if picked_team:
+                on_pick = normalize_team(leader) == normalize_team(picked_team)
+                note = f"\nYour pick: {picked_team} ({'winning' if on_pick else 'losing'})"
+            alert_once(
+                state,
+                f"{game_pk}:big_lead:{leader}",
+                topic,
+                f"Expected win: {leader}",
+                f"{leader} up {abs(margin)} in the {half.lower()} of the {inning}th.\n{score_line}{note}",
+                priority="high",
+            )
 
     # --- Win probability divergence for picked games ---
     if picked_team and status_code in LIVE_STATUS_CODES:
