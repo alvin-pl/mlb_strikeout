@@ -52,7 +52,7 @@ LIVE_STATUS_CODES = {"I", "IR", "IH", "MA", "MC", "ME", "MF", "MG", "MI"}
 FINAL_STATUS_CODES = {"F", "FR", "FT", "O"}
 WIN_PROB_BANDS = [0.25, 0.35, 0.50, 0.65, 0.75]
 BIG_LEAD_RUNS = 5
-BIG_LEAD_INNING = 5
+BIG_LEAD_INNING = 6
 
 
 def load_state(path: str) -> Dict[str, Any]:
